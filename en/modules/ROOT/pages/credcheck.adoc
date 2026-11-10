@@ -1,0 +1,6 @@
+= Enforce password policies with credcheck
+
+[#enable_preloading]
+== Enable preloading
+
+The `credcheck` library must be loaded at server startup through the xref:reference/guc_reference.adoc#shared_preload_libraries[shared_preload_libraries] configuration parameter.

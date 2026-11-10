@@ -1,0 +1,45 @@
+= Конфигурационные параметры сервера (GUC)
+:page-htmltitle: Обзор конфигурационных параметров сервера (GUC) | Greengage DB Docs
+:description: Конфигурационные параметры сервера (GUC), поддерживаемые в Greengage DB (на основе Greenplum). Назначение и категории классификации. Гайд от Greengage DB Docs
+
+Эта страница содержит список параметров конфигурации сервера Greengage DB в алфавитном порядке.
+Подробнее о механизме конфигурации сервера см. в статье xref:configure_database_guc.adoc[].
+
+Отдельный подраздел <<developer_parameters,>> содержит параметры, предназначенные только для разработки и тестирования.
+Не изменяйте их в production-кластерах.
+
+Некоторые параметры конфигурации Greengage DB намеренно исключены из этого раздела.
+Обычно такие параметры не предназначены для изменения пользователями в реальных сценариях.
+
+.ПРИМЕЧАНИЕ
+[NOTE]
+====
+* *Контекст* параметра определяет способы изменения его значения.
+Описания возможных значений контекста приведены в разделе xref:configure_database_guc.adoc#classification_context[Контекст].
+* *Область определения* указывает места установки параметра: `master` или `local` (независимые значения для мастера и сегментов).
+Подробнее см. в разделе xref:configure_database_guc.adoc#classification_master_local[master и local].
+Для параметров, которые не могут быть изменены пользователями, область определения указана как `read only`.
+====
+
+// application_name - gp_enable_sort_limit
+include::partial$guc_reference_part_1.adoc[]
+// gp_external_enable_exec - gpperfmon_port
+include::partial$guc_reference_part_2.adoc[]
+// ignore_checksum_failure - optimizer_parallel_union
+include::partial$guc_reference_part_3.adoc[]
+// password_encryption - xmloption
+include::partial$guc_reference_part_4.adoc[]
+
+[#developer_parameters]
+== Параметры разработки
+
+Параметры конфигурации сервера, перечисленные в этом разделе, предназначены только для разработки и тестирования.
+Они не отображаются в представлении https://www.postgresql.org/docs/9.4/view-pg-settings.html[pg_settings^,opts=nofollow] и выводе `gpconfig -l`, но могут быть установлены в _postgresql.conf_ или через команду xref:reference/sql_commands/set.adoc[SET] в зависимости от контекста.
+
+.ВНИМАНИЕ
+[CAUTION]
+====
+Не рекомендуется изменять эти параметры в production-средах.
+====
+
+include::partial$guc_reference_dev.adoc[]

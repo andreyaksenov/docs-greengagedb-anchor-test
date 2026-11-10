@@ -1,0 +1,3 @@
+= Server configuration parameters (GUCs)
+
+include::partial$guc_reference_part_4.adoc[]

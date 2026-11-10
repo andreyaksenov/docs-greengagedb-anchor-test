@@ -1,0 +1,815 @@
+= Настройка политик паролей с помощью credcheck
+:page-author: Андрей Аксенов
+:page-htmltitle: Настройка политик паролей с помощью расширения credcheck | Greengage DB Docs
+:description: Как настроить политики паролей и учетных данных в Greengage DB с помощью расширения credcheck. Руководство Greengage DB
+
+Расширение `credcheck` проверяет имена пользователей и пароли на соответствие политикам безопасности при создании роли или изменении ее пароля.
+Оно позволяет задавать требования к сложности и сроку действия паролей, отслеживать повторное использование паролей и блокировать пользователей после нескольких неудачных попыток аутентификации.
+В этой статье описано, как включить и использовать `credcheck` в Greengage DB.
+
+[#install]
+== Включение credcheck
+
+Расширение `credcheck` входит в состав Greengage DB, поэтому дополнительная сборка или установка не требуется.
+Чтобы начать использовать расширение, настройте предварительную загрузку его библиотеки и создайте расширение в нужной базе данных.
+
+[#build_from_source]
+=== (Необязательно) Сборка и установка из исходного кода
+
+Вы можете собрать расширение из исходного кода, например чтобы включить поддержку https://github.com/cracklib/cracklib[CrackLib^,opts=nofollow].
+Повторите указанные шаги на мастер-хосте, резервном мастер-хосте и всех сегмент-хостах.
+
+. В Ubuntu 22.04 установите зависимости для сборки:
++
+[source,console]
+----
+$ sudo apt update
+$ sudo apt install git gcc make libssl-dev libkrb5-dev libcrack2-dev cracklib-runtime
+----
++
+Пакет `cracklib-runtime` содержит готовый словарь в каталоге _/var/cache/cracklib/_.
++
+. Клонируйте репозиторий https://github.com/GreengageDB/credcheck[GreengageDB/credcheck^,opts=nofollow]:
++
+[source,console]
+----
+$ git clone https://github.com/GreengageDB/credcheck.git
+$ cd credcheck
+----
++
+. (Необязательно) Чтобы включить поддержку CrackLib, задайте значения `PG_CPPFLAGS` и `SHLIB_LINK` в _Makefile_ следующим образом:
++
+[source,makefile]
+----
+PG_CPPFLAGS = -DUSE_CRACKLIB '-DCRACKLIB_DICTPATH="/var/cache/cracklib/cracklib_dict"'
+SHLIB_LINK = -lcrack
+----
++
+. Соберите и установите расширение:
++
+[source,console]
+----
+$ make
+$ sudo --preserve-env=PATH make install
+----
++
+При установке библиотека помещается в _$GPHOME/lib/postgresql/_, а управляющий файл и SQL-файлы -- в _$GPHOME/share/postgresql/extension/_.
+
+[#enable_preloading]
+=== Включение предварительной загрузки
+
+Библиотека `credcheck` должна загружаться при запуске сервера с помощью параметра конфигурации xref:reference/guc_reference.adoc#shared_preload_libraries[shared_preload_libraries].
+Для проверки и изменения этой настройки используйте утилиту xref:reference/utils/gpconfig.adoc[gpconfig].
+Выполните следующие команды в командной строке на мастер-хосте от имени пользователя `gpadmin`:
+
+. Проверьте текущее значение `shared_preload_libraries`:
++
+[source,console]
+----
+$ gpconfig -s shared_preload_libraries
+----
+. Добавьте `credcheck` к текущему значению:
++
+[source,console]
+----
+$ gpconfig -c shared_preload_libraries -v '<current_value>,credcheck'
+----
++
+Если текущее значение пустое, укажите только `credcheck`.
+Настройка автоматически применяется к мастеру, резервному мастеру и всем сегментам.
+. xref:start_stop_cluster.adoc#restart[Перезапустите кластер]:
++
+[source,console]
+----
+$ gpstop -ar
+----
+
+[#create_extension]
+=== Создание расширения
+
+Подключитесь к целевой базе данных с помощью xref:connect_with_psql.adoc[psql] от имени суперпользователя и создайте расширение:
+
+[source,postgresql]
+----
+CREATE EXTENSION credcheck;
+----
+
+При создании расширения в базу данных добавляются <<reference_functions,функции и представления>> `credcheck`.
+Проверки учетных данных действуют во всем кластере с момента предварительной загрузки библиотеки, даже до создания расширения в базе данных.
+
+[#usage]
+== Использование
+
+Примеры ниже показывают, как настроить типовые политики учетных данных с помощью `credcheck`.
+Выполняйте SQL-команды от имени суперпользователя (например, `gpadmin`) в сессии `psql`.
+
+SQL-команды `SET` в этих примерах действуют только в текущей сессии.
+Чтобы задать настройки на уровне кластера, используйте `gpconfig` и перезагрузите конфигурацию или перезапустите кластер в соответствии с xref:configure_database_guc.adoc#classification_context[контекстом] параметра.
+
+[#usage_username_policy]
+=== Политика имен пользователей
+
+Используйте параметр <<param_username_min_length,credcheck.username_min_length>>, чтобы отклонять слишком короткие имена пользователей.
+Полный список параметров приведен в разделе <<reference_username_checks>>.
+
+Установите минимальную длину `4`:
+
+[source,postgresql]
+----
+include::example$credcheck/script.sql[tag=set_username_min_length]
+----
+
+Попробуйте создать роль с именем короче 4 символов:
+
+[source,postgresql]
+----
+include::example$credcheck/script.sql[tag=create_role_bob]
+----
+
+Команда завершается ошибкой:
+
+....
+ERROR:  username length should match the configured credcheck.username_min_length (4)
+....
+
+Имя, соответствующее требованию, принимается:
+
+[source,postgresql]
+----
+include::example$credcheck/script.sql[tag=create_role_alice]
+----
+
+Удалите созданную роль и сбросьте значение параметра:
+
+[source,postgresql]
+----
+include::example$credcheck/script.sql[tag=cleanup_username_policy]
+----
+
+[#usage_password_policy]
+=== Политика паролей
+
+Используйте параметр <<param_password_min_length,credcheck.password_min_length>>, чтобы отклонять слишком короткие пароли.
+Полный список параметров приведен в разделе <<reference_password_checks>>.
+
+Установите минимальную длину пароля `10`:
+
+[source,postgresql]
+----
+include::example$credcheck/script.sql[tag=set_password_min_length]
+----
+
+Попробуйте создать роль с более коротким паролем:
+
+[source,postgresql]
+----
+include::example$credcheck/script.sql[tag=create_role_alice_short_password]
+----
+
+Команда завершается ошибкой:
+
+....
+ERROR:  password length should match the configured credcheck.password_min_length (10)
+....
+
+Восстановите значение параметра по умолчанию:
+
+[source,postgresql]
+----
+include::example$credcheck/script.sql[tag=reset_password_min_length]
+----
+
+По умолчанию <<param_password_contain_username,credcheck.password_contain_username>> отклоняет пароли, содержащие имя пользователя.
+Попробуйте создать роль, пароль которой содержит ее имя:
+
+[source,postgresql]
+----
+include::example$credcheck/script.sql[tag=create_role_bob_password_contain_username]
+----
+
+Команда завершается ошибкой:
+
+....
+ERROR:  password should not contain username
+....
+
+.ПРИМЕЧАНИЕ
+[NOTE]
+====
+В <<build_from_source,сборке>> `credcheck` с поддержкой CrackLib пароли, которые CrackLib считает слабыми, отклоняются с сообщением `ERROR: password is easily cracked` независимо от значений параметров `credcheck.*`.
+====
+
+[#usage_password_reuse]
+=== Политика повторного использования паролей
+
+Используйте параметр <<param_password_reuse_history,credcheck.password_reuse_history>>, чтобы запретить повторное использование последних паролей.
+
+Установите запрет на повторное использование двух последних паролей:
+
+[source,postgresql]
+----
+include::example$credcheck/script.sql[tag=set_password_reuse_history]
+----
+
+Создайте пользователя с паролем:
+
+[source,postgresql]
+----
+include::example$credcheck/script.sql[tag=create_user_alice]
+----
+
+Измените пароль:
+
+[source,postgresql]
+----
+include::example$credcheck/script.sql[tag=alter_user_alice_password]
+----
+
+Попробуйте снова задать тот же пароль:
+
+[source,postgresql]
+----
+include::example$credcheck/script.sql[tag=alter_user_alice_reused_password]
+----
+
+Команда завершается ошибкой, поскольку пароль уже записан в истории:
+
+....
+ERROR:  Cannot use this credential following the password reuse policy
+....
+
+Очистите историю паролей для `alice` от имени суперпользователя:
+
+[source,postgresql]
+----
+include::example$credcheck/script.sql[tag=reset_password_history]
+----
+
+Функция удаляет две записи из истории паролей и возвращает `2`.
+
+Теперь пароль можно задать повторно:
+
+[source,postgresql]
+----
+include::example$credcheck/script.sql[tag=alter_user_alice_password_after_reset]
+----
+
+Удалите созданную роль и сбросьте значение параметра:
+
+[source,postgresql]
+----
+include::example$credcheck/script.sql[tag=cleanup_password_reuse]
+----
+
+[#usage_auth_delay]
+=== Задержка при аутентификации
+
+Параметр <<param_auth_delay_ms,credcheck.auth_delay_ms>> задает задержку в миллисекундах перед отправкой сообщения о неудачной аутентификации, что усложняет и замедляет атаки методом перебора.
+Так как параметр имеет контекст `sighup`, для применения изменений обновите его значение с помощью утилиты `gpconfig` и перезагрузите конфигурацию кластера.
+
+В командной строке на мастер-хосте от имени пользователя `gpadmin` установите задержку 3000 миллисекунд:
+
+[source,console]
+----
+$ gpconfig -c credcheck.auth_delay_ms -v 3000
+----
+
+.ПРИМЕЧАНИЕ
+[NOTE]
+====
+В примерах подключения ниже для аутентификации пользователя `alice` по TCP/IP используется пароль.
+Убедитесь, что файл xref:pg_hba.adoc[pg_hba.conf] мастера содержит соответствующую запись, например:
+
+[source,ini]
+----
+host    all    alice    127.0.0.1/32    md5
+----
+====
+
+Перезагрузите конфигурацию:
+
+[source,console]
+----
+$ gpstop -u
+----
+
+В сессии `psql` суперпользователя создайте роль с паролем:
+
+[source,postgresql]
+----
+include::example$credcheck/script.sql[tag=create_role_alice_login]
+----
+
+В командной строке попробуйте подключиться с неверным паролем:
+
+[source,console]
+----
+$ PGPASSWORD=wrong_password psql postgres -U alice -h 127.0.0.1 -p 5432
+----
+
+Ошибка появляется через три секунды:
+
+....
+psql: FATAL:  password authentication failed for user "alice"
+....
+
+Прежде чем перейти к следующему примеру, подключитесь с правильным паролем, чтобы сбросить счетчик неудачных попыток аутентификации:
+
+[source,console]
+----
+$ PGPASSWORD=K3vNq=R7z psql postgres -U alice -h 127.0.0.1 -p 5432 -c "SELECT 1"
+----
+
+[#usage_auth_ban]
+=== Блокировка при аутентификации
+
+Параметр <<param_max_auth_failure,credcheck.max_auth_failure>> блокирует пользователя после указанного числа последовательных неудачных попыток аутентификации.
+Заблокированный пользователь не может подключиться даже с верным паролем.
+Это продолжение примера из раздела <<usage_auth_delay>>: роль `alice` уже создана.
+
+В командной строке на мастер-хосте от имени пользователя `gpadmin` установите порог блокировки в три последовательные неудачные попытки аутентификации:
+
+[source,console]
+----
+$ gpconfig -c credcheck.max_auth_failure -v 3
+----
+
+Перезагрузите конфигурацию:
+
+[source,console]
+----
+$ gpstop -u
+----
+
+В командной строке попробуйте трижды подключиться с неверным паролем:
+
+[source,console]
+----
+$ PGPASSWORD=wrong_password psql postgres -U alice -h 127.0.0.1 -p 5432
+----
+
+Первые две попытки завершаются обычной ошибкой аутентификации:
+
+....
+psql: FATAL:  password authentication failed for user "alice"
+....
+
+Когда счетчик неудачных попыток достигает указанного предела, `alice` блокируется.
+Третья и все последующие попытки подключения отклоняются даже с верным паролем:
+
+....
+psql: FATAL:  rejecting connection, user 'alice' has been banned
+....
+
+В сессии `psql` суперпользователя подключитесь к базе данных, в которой вы создали расширение, и просмотрите заблокированные роли:
+
+[source,postgresql]
+----
+include::example$credcheck/script.sql[tag=select_pg_banned_role]
+----
+
+Результат:
+
+....
+ rolname | failure_count
+---------+---------------
+ alice   |             3
+(1 row)
+....
+
+В той же сессии `psql` разблокируйте `alice`:
+
+[source,postgresql]
+----
+include::example$credcheck/script.sql[tag=reset_banned_role]
+----
+
+Функция снимает блокировку и возвращает `1`.
+
+В командной строке убедитесь, что `alice` может подключиться с верным паролем:
+
+[source,console]
+----
+$ PGPASSWORD=K3vNq=R7z psql postgres -U alice -h 127.0.0.1 -p 5432
+----
+
+Удалите роль в сессии `psql` суперпользователя:
+
+[source,postgresql]
+----
+include::example$credcheck/script.sql[tag=cleanup_auth_ban]
+----
+
+[#reference]
+== Справочник
+
+[#list_parameters]
+=== Просмотр доступных параметров
+
+После предварительной загрузки библиотеки все параметры `credcheck` регистрируются как пользовательские параметры конфигурации сервера.
+Чтобы вывести их список с текущими значениями и описаниями, выполните следующий запрос:
+
+[source,postgresql]
+----
+SELECT name, setting, context, short_desc
+FROM pg_settings
+WHERE name LIKE 'credcheck%'
+ORDER BY name;
+----
+
+[#reference_parameters]
+=== Параметры
+
+В приведенных ниже списках описаны параметры версии `credcheck`, поставляемой с Greengage DB 6.
+Подробные сведения о контекстах параметров приведены в разделе xref:configure_database_guc.adoc#classification_context[Контекст].
+
+[#reference_username_checks]
+==== Проверки имен пользователей
+
+[#param_username_min_length]
+credcheck.username_min_length::
+Минимальная длина имени пользователя.
++
+[%hardbreaks]
+**По умолчанию**: `1`.
+**Контекст**: `superuser`.
+
+[#param_username_min_special]
+credcheck.username_min_special::
+Минимальное число специальных символов в имени пользователя.
++
+[%hardbreaks]
+**По умолчанию**: `0`.
+**Контекст**: `superuser`.
+
+[#param_username_min_digit]
+credcheck.username_min_digit::
+Минимальное число цифр в имени пользователя.
++
+[%hardbreaks]
+**По умолчанию**: `0`.
+**Контекст**: `superuser`.
+
+[#param_username_min_upper]
+credcheck.username_min_upper::
+Минимальное число символов верхнего регистра в имени пользователя.
++
+[%hardbreaks]
+**По умолчанию**: `0`.
+**Контекст**: `superuser`.
+
+[#param_username_min_lower]
+credcheck.username_min_lower::
+Минимальное число символов нижнего регистра в имени пользователя.
++
+[%hardbreaks]
+**По умолчанию**: `0`.
+**Контекст**: `superuser`.
+
+[#param_username_min_repeat]
+credcheck.username_min_repeat::
+Максимальное число одинаковых символов подряд в имени пользователя.
+`0` отключает проверку.
++
+[%hardbreaks]
+**По умолчанию**: `0`.
+**Контекст**: `superuser`.
+**Пример**: при значении `2` имя `annalyst` принимается, а `annnalyst` отклоняется.
+
+[#param_username_contain_password]
+credcheck.username_contain_password::
+Имя пользователя не должно содержать пароль.
+При сравнении учитывается регистр, если параметр <<param_username_ignore_case,credcheck.username_ignore_case>> выключен.
++
+[%hardbreaks]
+**По умолчанию**: `on`.
+**Контекст**: `superuser`.
+**Пример**: при пароле `spring2024` имя пользователя `spring2024_admin` отклоняется.
+
+[#param_username_contain]
+credcheck.username_contain::
+Список разделенных запятыми подстрок, хотя бы одну из которых должно содержать имя пользователя.
++
+[%hardbreaks]
+**По умолчанию**: _(пусто)_.
+**Контекст**: `superuser`.
+**Пример**: при значении `_,-` имя `reporting_svc` принимается, а `reportingsvc` отклоняется.
+
+[#param_username_not_contain]
+credcheck.username_not_contain::
+Список разделенных запятыми подстрок, которые не должно содержать имя пользователя.
++
+[%hardbreaks]
+**По умолчанию**: _(пусто)_.
+**Контекст**: `superuser`.
+**Пример**: при значении `@,#` имя `svc@billing` отклоняется.
+
+[#param_username_ignore_case]
+credcheck.username_ignore_case::
+Игнорировать регистр при проверках имен пользователей.
+Также отключает проверки <<param_username_min_upper,credcheck.username_min_upper>> и <<param_username_min_lower,credcheck.username_min_lower>>.
++
+[%hardbreaks]
+**По умолчанию**: `off`.
+**Контекст**: `superuser`.
+
+[#reference_password_checks]
+==== Проверки паролей
+
+[#param_password_min_length]
+credcheck.password_min_length::
+Минимальная длина пароля.
++
+[%hardbreaks]
+**По умолчанию**: `1`.
+**Контекст**: `superuser`.
+
+[#param_password_min_special]
+credcheck.password_min_special::
+Минимальное число специальных символов в пароле.
++
+[%hardbreaks]
+**По умолчанию**: `0`.
+**Контекст**: `superuser`.
+
+[#param_password_min_digit]
+credcheck.password_min_digit::
+Минимальное число цифр в пароле.
++
+[%hardbreaks]
+**По умолчанию**: `0`.
+**Контекст**: `superuser`.
+
+[#param_password_min_upper]
+credcheck.password_min_upper::
+Минимальное число символов верхнего регистра в пароле.
++
+[%hardbreaks]
+**По умолчанию**: `0`.
+**Контекст**: `superuser`.
+
+[#param_password_min_lower]
+credcheck.password_min_lower::
+Минимальное число символов нижнего регистра в пароле.
++
+[%hardbreaks]
+**По умолчанию**: `0`.
+**Контекст**: `superuser`.
+
+[#param_password_min_repeat]
+credcheck.password_min_repeat::
+Максимальное число одинаковых символов подряд в пароле.
+`0` отключает проверку.
++
+[%hardbreaks]
+**По умолчанию**: `0`.
+**Контекст**: `superuser`.
+**Пример**: при значении `2` пароль `Stt0ng!pass` принимается, а `Sttt0ng!pass` отклоняется.
+
+[#param_password_contain_username]
+credcheck.password_contain_username::
+Пароль не должен содержать имя пользователя.
+При сравнении учитывается регистр, если параметр <<param_password_ignore_case,credcheck.password_ignore_case>> выключен.
++
+[%hardbreaks]
+**По умолчанию**: `on`.
+**Контекст**: `superuser`.
+**Пример**: для пользователя `alice` пароль `alice_2024Secret` отклоняется.
+
+[#param_password_contain]
+credcheck.password_contain::
+Список разделенных запятыми подстрок, хотя бы одну из которых должен содержать пароль.
++
+[%hardbreaks]
+**По умолчанию**: _(пусто)_.
+**Контекст**: `superuser`.
+**Пример**: при значении `x,y,z` пароль `x0o0dPassword` принимается, а `go0dPassword` отклоняется.
+
+[#param_password_not_contain]
+credcheck.password_not_contain::
+Список разделенных запятыми подстрок, которые не должен содержать пароль.
++
+[%hardbreaks]
+**По умолчанию**: _(пусто)_.
+**Контекст**: `superuser`.
+**Пример**: при значении `!,@,=,$,#` пароль `p@ssw0rd` отклоняется.
+
+[#param_password_ignore_case]
+credcheck.password_ignore_case::
+Игнорировать регистр при проверках паролей.
+Также отключает проверки <<param_password_min_upper,credcheck.password_min_upper>> и <<param_password_min_lower,credcheck.password_min_lower>>.
++
+[%hardbreaks]
+**По умолчанию**: `off`.
+**Контекст**: `superuser`.
+
+[#param_password_valid_until]
+credcheck.password_valid_until::
+Минимальный срок действия пароля в днях для явно заданного выражения `VALID UNTIL` в xref:reference/sql_commands/create_role.adoc[CREATE ROLE] или xref:reference/sql_commands/alter_role.adoc[ALTER ROLE].
+Если выражение отсутствует, расширение автоматически устанавливает срок действия до полуночи даты `current_date + N + 1`, где `N` -- значение этого параметра, а дата вычисляется в часовом поясе сессии.
+Это также относится к операторам `ALTER ROLE`, которые изменяют атрибуты, отличные от пароля.
+`0` отключает проверку и автоматическую установку срока действия расширением.
++
+[%hardbreaks]
+**По умолчанию**: `0`.
+**Контекст**: `superuser`.
+
+// TODO: in Greengage DB 6, the CREATE ROLE check for password_valid_max is inverted (shorter validity periods are rejected, longer ones are accepted).
+[#param_password_valid_max]
+credcheck.password_valid_max::
+Максимальный срок действия пароля в днях для явно заданного выражения `VALID UNTIL` в xref:reference/sql_commands/alter_role.adoc[ALTER ROLE].
+При ненулевом значении xref:reference/sql_commands/create_role.adoc[CREATE ROLE] требует выражение `VALID UNTIL`, если <<param_password_valid_until,credcheck.password_valid_until>> не задает его автоматически.
+`0` отключает проверку.
++
+[%hardbreaks]
+**По умолчанию**: `0`.
+**Контекст**: `superuser`.
+
+// TODO: password_valid_warning has no effect in Greengage DB 6; no warning is issued before password expiration.
+[#param_password_valid_warning]
+credcheck.password_valid_warning::
+Выдавать предупреждение за указанное число дней до истечения срока действия пароля.
++
+[%hardbreaks]
+**По умолчанию**: `0`.
+**Контекст**: `superuser`.
+
+[#reference_password_reuse_policy]
+==== Политика повторного использования паролей
+
+[#param_password_reuse_history]
+credcheck.password_reuse_history::
+Число последних паролей пользователя, повторное использование которых запрещено, включая текущий пароль.
+`0` отключает ограничение по числу паролей.
+Взаимодействие с ограничением по времени описано в <<param_password_reuse_interval,credcheck.password_reuse_interval>>.
++
+[%hardbreaks]
+**По умолчанию**: `0`.
+**Контекст**: `superuser`.
+**Пример**: при значении `3` новый пароль не должен совпадать ни с одним из 3 последних паролей пользователя.
+
+[#param_password_reuse_interval]
+credcheck.password_reuse_interval::
+Порог давности в днях для повторного использования пароля, записанного в истории.
+Расширение измеряет давность в полных днях и разрешает повторное использование только тогда, когда она превышает указанное значение.
+Когда этот параметр включен, пароль, давность которого превышает порог, можно использовать повторно, даже если он входит в число последних паролей, повторное использование которых запрещено параметром <<param_password_reuse_history,credcheck.password_reuse_history>>.
+`0` отключает ограничение по времени.
++
+[%hardbreaks]
+**По умолчанию**: `0`.
+**Контекст**: `superuser`.
+**Пример**: при значении `365` пароль, записанный 365 дней назад, по-прежнему отклоняется; его можно использовать повторно, когда его давность достигнет 366 дней.
+
+[#param_history_max_size]
+credcheck.history_max_size::
+Максимальное число записей в истории паролей.
++
+[%hardbreaks]
+**По умолчанию**: `65535`.
+**Контекст**: `postmaster`.
+
+[#reference_authentication_failure_ban]
+==== Блокировка при неудачных попытках аутентификации
+
+[#param_max_auth_failure]
+credcheck.max_auth_failure::
+Число последовательных неудачных попыток аутентификации, при котором срабатывает блокировка.
+Успешная аутентификация до достижения предела сбрасывает счетчик.
+`0` отключает блокировку.
+После блокировки пользователь не может подключиться даже с верным паролем, пока блокировка не будет снята с помощью <<reference_functions,pg_banned_role_reset()>>.
++
+[%hardbreaks]
+**По умолчанию**: `0`.
+**Контекст**: `superuser`.
+
+[#param_reset_superuser]
+credcheck.reset_superuser::
+Разрешить первоначальному суперпользователю базы данных (OID роли `10`, обычно `gpadmin`) восстановить доступ после блокировки.
+На других суперпользователей параметр не влияет.
++
+[%hardbreaks]
+**По умолчанию**: `off`.
+**Контекст**: `sighup`.
+
+[#param_auth_failure_cache_size]
+credcheck.auth_failure_cache_size::
+Максимальное число записей в кеше неудачных попыток аутентификации.
++
+[%hardbreaks]
+**По умолчанию**: `1024`.
+**Контекст**: `postmaster`.
+
+[#param_whitelist_auth_failure]
+credcheck.whitelist_auth_failure::
+Список имен пользователей через запятую, к которым не применяется блокировка при неудачных попытках аутентификации.
++
+[%hardbreaks]
+**По умолчанию**: _(пусто)_.
+**Контекст**: `superuser`.
+
+[#param_auth_delay_ms]
+credcheck.auth_delay_ms::
+Задержка в миллисекундах перед отправкой сообщения о неудачной попытке аутентификации.
++
+[%hardbreaks]
+**По умолчанию**: `0`.
+**Контекст**: `sighup`.
+
+[#reference_miscellaneous]
+==== Прочие параметры
+
+[#param_password_change_first_login]
+credcheck.password_change_first_login::
+Требовать от ролей, созданных при включенном параметре, сменить пароль при первом входе перед выполнением запросов.
++
+[%hardbreaks]
+**По умолчанию**: `off`.
+**Контекст**: `superuser`.
+
+[#param_disallow_change_password]
+credcheck.disallow_change_password::
+Запретить изменение паролей через `ALTER ROLE`, в том числе суперпользователями.
+Также отклоняет операторы `ALTER ROLE`, изменяющие другие атрибуты роли, например `CONNECTION LIMIT`.
+Ограничение не действует, если вошедший в систему пользователь указан в <<param_whitelist,credcheck.whitelist>>.
++
+[%hardbreaks]
+**По умолчанию**: `off`.
+**Контекст**: `superuser`.
+
+[#param_encrypted_password_allowed]
+credcheck.encrypted_password_allowed::
+Разрешить зашифрованные пароли в операторах xref:reference/sql_commands/create_role.adoc[CREATE ROLE] и xref:reference/sql_commands/alter_role.adoc[ALTER ROLE].
+Проверку паролей в открытом виде невозможно применить к предварительно зашифрованным паролям.
+Команда `\password` в `psql` отправляет зашифрованный пароль и требует включения этого параметра.
++
+[%hardbreaks]
+**По умолчанию**: `off`.
+**Контекст**: `superuser`.
+
+[#param_superuser_nocheck]
+credcheck.superuser_nocheck::
+Пропускать проверки длины, состава символов, повторений и наличия имени пользователя для паролей в открытом виде, заданных суперпользователем.
++
+[%hardbreaks]
+**По умолчанию**: `off`.
+**Контекст**: `superuser`.
+
+[#param_whitelist]
+credcheck.whitelist::
+Список имен пользователей через запятую, для которых не выполняются проверки имени пользователя, пароля в открытом виде, повторного использования пароля и срока действия.
+Имена сопоставляются без учета регистра.
++
+[%hardbreaks]
+**По умолчанию**: _(пусто)_.
+**Контекст**: `superuser`.
+**Пример**: при значении `admin,svc_backup` пользователи `admin` и `svc_backup` могут задавать пароли в открытом виде, не соответствующие настроенным требованиям к сложности.
+
+// TODO: no_password_logging does not hide SQL statements containing passwords in Greengage DB 6 server error logs.
+[#param_no_password_logging]
+credcheck.no_password_logging::
+Не включать SQL-операторы, содержащие пароли, в записи лога ошибок сервера.
++
+[%hardbreaks]
+**По умолчанию**: `on`.
+**Контекст**: `superuser`.
+
+[#reference_functions_views]
+=== Функции и представления
+
+Расширение создает следующие объекты в схеме `public`.
+
+[#reference_views]
+==== Представления
+
+pg_password_history::
+Показывает историю паролей: `rolename`, `password_date` и `password_hash`.
+История включает хеши текущих и предыдущих паролей, записанных при включенной политике повторного использования паролей.
+
+pg_banned_role::
+Показывает счетчики неудачных попыток аутентификации для ролей, даже если порог блокировки еще не достигнут.
+Столбцы: `rolname`, `failure_count` и `banned_date`.
+
+[#reference_functions]
+==== Функции
+
+pg_password_history() returns setof record::
+Возвращает те же столбцы, что и представление `pg_password_history`.
+
+pg_banned_role() returns setof record::
+Возвращает `roleid` (OID роли), `failure_count` и `banned_date` из кеша неудачных попыток аутентификации.
+Представление `pg_banned_role` заменяет OID роли ее именем.
+
+pg_password_history_reset() returns integer::
+pg_password_history_reset(username name) returns integer::
+Очищает всю историю паролей или записи для отдельного пользователя.
+Возвращает число удаленных записей.
+
+pg_password_history_timestamp(username name, new_timestamp timestamp with time zone) returns integer::
+Изменяет временную метку записей в истории паролей пользователя.
+Возвращает число измененных записей.
+Предназначена только для тестирования.
+
+pg_banned_role_reset() returns integer::
+pg_banned_role_reset(username name) returns integer::
+Сбрасывает счетчики неудачных попыток аутентификации для всех ролей или отдельной роли и снимает соответствующие блокировки.
+Возвращает число удаленных записей.

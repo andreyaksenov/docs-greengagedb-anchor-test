@@ -1,0 +1,7 @@
+name: docs-gg
+version: current
+title: Greengage DB
+display_version: '6'
+start_page: ROOT:intro.adoc
+nav:
+- modules/ROOT/nav.adoc
